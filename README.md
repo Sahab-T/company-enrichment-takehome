@@ -1,11 +1,10 @@
-# Company Enrichment — &lt;your name&gt;
+# Company Enrichment — Sahab Tariq
 
-A small slice of a company-data platform: messy input rows in, validated structured
-enrichment out, with the provenance and confidence behind every field visible in the
-dashboard.
+Messy company rows in, validated structured enrichment out, with the source and confidence
+behind every field visible in the dashboard.
 
-Stack as specified — React + TypeScript (Vite), Supabase (Postgres + Edge Functions on
-Deno), OpenAI. The whole pipeline runs **without an API key** via the mock provider.
+React + TypeScript (Vite), Supabase (Postgres + Edge Functions on Deno), OpenAI. The whole
+thing runs without an API key using the mock provider.
 
 ---
 
@@ -19,25 +18,24 @@ supabase start         # note the printed API URL, anon key and service_role key
 supabase db reset      # applies supabase/migrations/*.sql, then supabase/seed.sql
 ```
 
-`supabase db reset` also loads the seed automatically — `supabase/seed.sql` is picked up
-by the CLI after migrations run. It's guarded by a `NOT EXISTS` check, so re-running is a
-no-op rather than a duplicate load.
+The CLI picks up `supabase/seed.sql` automatically after the migrations, so `db reset` loads
+the 15 seed rows too. It's guarded by a `NOT EXISTS` check so re-running won't duplicate them.
 
-*Hosted project instead of local?* Run the contents of `supabase/migrations/0001_init.sql`
-and then `supabase/seed.sql` in the SQL editor, and use your project's URL/keys below.
+If you'd rather use a hosted project, run `supabase/migrations/0001_init.sql` and then
+`supabase/seed.sql` in the SQL editor and use that project's URL and keys below.
 
 ### 2. Edge Function
 
 ```bash
 cp .env.example .env
-# set SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY from step 1
-# leave LLM_PROVIDER=mock to run with no API key
+# fill in SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY from step 1
+# leave LLM_PROVIDER=mock if you don't want to use a key
 
 supabase functions serve enrich --env-file ./.env
 ```
 
-To use the real model instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY=sk-...`.
-Everything else — validation, retries, persistence — is identical between the two.
+For the real model, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY=sk-...`. Nothing else
+changes: validation, retries and persistence are the same either way.
 
 ### 3. Web app
 
@@ -49,16 +47,19 @@ npm install
 npm run dev
 ```
 
-### 4. Seeing the reliability path without an API key
+### 4. Seeing the retry path without a key
 
-The mock provider has a chaos switch so the retry ladder is demonstrable offline. In
-`.env`:
+The mock provider has a chaos switch so you can watch the reliability code work offline.
+Set `MOCK_CHAOS` in `.env`:
 
-| `MOCK_CHAOS` | Behaviour |
-|---|---|
-| `off` (default) | Valid output on attempt 1. |
-| `first` | Attempt 1 returns a bad enum, a percentage confidence and an extra key; attempt 2 recovers. The row lands `enriched` with `attempts: 2` and the failure visible in `attempt_log`. |
-| `always` | Every attempt fails validation. The company ends `failed`, with a `failed` row in `enrichment_results` carrying the error and the full attempt trace. |
+- `off` (default) — valid output first time.
+- `first` — attempt 1 comes back with a bad enum value, a percentage confidence and an extra
+  key. Attempt 2 recovers. The row ends up `enriched` with `attempts: 2`, and the failed
+  attempt is still visible in `attempt_log`.
+- `always` — nothing ever validates. The company ends up `failed`, with a `failed` row in
+  `enrichment_results` holding the error and the full attempt trace.
+
+`always` is the interesting one if you want to see how failures surface in the UI.
 
 ---
 
@@ -66,7 +67,7 @@ The mock provider has a chaos switch so the retry ladder is demonstrable offline
 
 ```
 companies_seed.json
-        │  seed.sql (raw, messiness preserved)
+        │  seed.sql (loaded raw, messiness intact)
         ▼
    companies ──────────────────────────────► React dashboard
    (raw row + denormalised status)          (paginated list, free-text filter)
@@ -76,239 +77,249 @@ companies_seed.json
         ▼                                              │
    Edge Function (Deno) ◄──────────────────────────────┘
         │
-        │  1. authorise caller against companies.owner_id
+        │  1. authorise the caller against companies.owner_id
         │  2. claim the run (conditional UPDATE → status 'running')
         │  3. LLM call ──► normalise ──► zod validate   ┐
-        │        └── invalid? tighten prompt, retry     │ up to 3 attempts
-        │        └── still invalid? escalate model      ┘
-        │  4. persist (service role, bypasses RLS)
+        │        └── invalid? tighten the prompt, retry │ up to 3 attempts
+        │        └── still invalid? escalate the model  ┘
+        │  4. persist (service role, so RLS is bypassed)
         ▼
    enrichment_results (append-only, one row per RUN)
         │
-        └─► companies.current_enrichment_id ──► what the dashboard displays
+        └─► companies.current_enrichment_id ──► what the dashboard shows
 ```
 
-A company flows: **seeded raw** → `pending` → user clicks *Enrich* → `running` →
-the function produces a validated result → a new `enrichment_results` row is inserted and
-`companies.current_enrichment_id` repointed → `enriched`. If every attempt fails, a
-`failed` row is still written (with the error and attempt trace) and the company is marked
-`failed` — but `current_enrichment_id` is **not** repointed, so a bad re-run never erases a
-good previous enrichment.
+A company starts seeded and `pending`. You click Enrich, it goes `running`, the function
+produces a validated result, a new `enrichment_results` row is inserted, and
+`companies.current_enrichment_id` is repointed at it. Status becomes `enriched`.
+
+If every attempt fails, a `failed` row still gets written with the error and the attempt
+trace, and the company is marked `failed`. But `current_enrichment_id` is left alone, so a
+bad re-run never wipes out a good previous enrichment.
 
 ### Data model
 
-**`companies`** — the raw layer. Seed rows load verbatim: the leading spaces in
-`"  Zalando SE"`, the empty-string domains, the `"siemens"` near-duplicate of
-`"Siemens AG"`. Normalising at ingest would throw away the exact problem the enrichment
-step exists to solve. On top of the raw columns it carries denormalised state:
-`enrichment_status`, `enrichment_attempts`, `last_enriched_at`, `current_enrichment_id`,
-plus `owner_id` for tenancy.
+`companies` is the raw layer. The seed loads verbatim, including the leading spaces in
+`"  Zalando SE"`, the empty-string domains, and the `"siemens"` near-duplicate of
+`"Siemens AG"`. Cleaning that up at ingest would throw away the exact problem the enrichment
+step exists to solve. On top of the raw columns it carries `enrichment_status`,
+`enrichment_attempts`, `last_enriched_at`, `current_enrichment_id` and `owner_id`.
 
-**`enrichment_results`** — append-only, **one row per run**, successes and failures alike.
-Columns: the five contract fields; run-level provenance (`source` / `provider` / `model` /
-`prompt_version`); per-field provenance (`field_sources` jsonb); and a reliability trace
-(`attempts`, `latency_ms`, `error`, `repairs`, `attempt_log`, `raw_response`).
+`enrichment_results` is append-only, one row per run, successes and failures alike. It holds
+the five contract fields, run-level provenance (`source`, `provider`, `model`,
+`prompt_version`), per-field provenance in a `field_sources` jsonb column, and the reliability
+trace: `attempts`, `latency_ms`, `error`, `repairs`, `attempt_log`, `raw_response`.
 
 ---
 
 ## Key decisions & trade-offs
 
-**Append-only results, with a pointer for reads.** An LLM pipeline is non-deterministic, so
-history is the only way to answer "why did this field change?" and to compare prompt/model
-versions. The usual cost of append-only is a slower read — solved with
-`companies.current_enrichment_id`, which turns "the enrichment to display" into a primary-key
-lookup. The alternative (`is_current` + a partial unique index) needs two writes per run and
-a wider index; this needs one insert and one update.
+**Append-only results, with a pointer for reads.** LLM output isn't deterministic, so keeping
+history is the only way to answer "why did this field change?" or to compare one prompt
+version against another. Append-only usually costs you on read, which is what
+`companies.current_enrichment_id` solves: finding the enrichment to display is a primary-key
+lookup. I considered an `is_current` flag with a partial unique index instead, but that needs
+two writes per run and a wider index. This way it's one insert and one update.
 
-**Status denormalised onto `companies`.** It is derivable from `enrichment_results`, so this
-is deliberate duplication. The dashboard filters, sorts and paginates on status, and deriving
-it would put an aggregate over the history table in the hot path of every page load. The
-write that could desynchronise it is confined to a single function.
+**Status is denormalised onto `companies`.** It's derivable from `enrichment_results`, so this
+is duplication on purpose. The dashboard filters, sorts and paginates on status, and deriving
+it would put an aggregate over the history table in the hot path of every page load. Only one
+function writes it, so the risk of the two drifting apart is contained.
 
-**Per-field provenance as `jsonb`, not columns.** The brief's core asks for a `source`/`model`
-column so provenance is visible; the stretch is a normalised per-field audit table. `jsonb`
-sits between them: the detail view renders a source and model per field today, and the field
-set can change with the LLM contract without a migration. It is not efficiently queryable —
-if provenance ever needs aggregating ("how many fields came from gpt-4o last week?"), that is
-the signal to promote it to the real audit table.
+**Per-field provenance as jsonb rather than more columns.** The brief asks for a source/model
+column in the core and a normalised per-field audit table as a stretch. jsonb sits between the
+two: the detail view can show a source and model for each field today, and the field set can
+change with the LLM contract without a migration. The downside is it isn't efficiently
+queryable. If provenance ever needs aggregating (something like "how many fields came from
+gpt-4o last week"), that's the point to promote it to a real audit table.
 
-**Synchronous enrichment.** One click, one HTTP call, one company, result rendered when it
-returns. Correct for a dashboard action where the user is watching, and it keeps the failure
-path observable. It is the wrong shape for the 10k-row backfill — see *what's next*.
+**Enrichment is synchronous.** One click, one HTTP call, one company, result rendered when it
+comes back. That's the right shape for a dashboard action where someone is watching, and it
+keeps failures visible. It's the wrong shape for a 10k backfill — see below.
 
-**Failures are rows, not logs.** A failed run writes a full `enrichment_results` row with the
-error, the attempt trace and the last raw model output. Debugging a bad enrichment a week
-later shouldn't require re-running it.
+**Failures are rows, not log lines.** A failed run writes a full `enrichment_results` row with
+the error, the per-attempt trace and the last raw model output. Debugging a bad enrichment a
+week later shouldn't mean re-running it and hoping it fails the same way.
 
-**Validation twice, deliberately.** zod in the function is the gate; the CHECK constraints on
+**Validation happens twice.** zod inside the function is the gate. The CHECK constraints on
 `enrichment_results` are the backstop. `enrichment_results_complete_when_enriched` makes a
-half-filled "success" physically unrepresentable, so even a bug in the function cannot produce
-one. Cheap, and it means the table's guarantees don't depend on the application being correct.
+half-filled success impossible to store at all, so the table's guarantees don't depend on my
+application code being correct. It's cheap insurance.
 
 **`count: "estimated"` on the list query.** An exact `COUNT(*)` over a filtered 100k-row table
-is a full scan on every keystroke. Postgres's planner estimate is effectively free, and
-PostgREST falls back to an exact count when the result set is small — so a filtered search
-still shows a true total, and the UI prefixes `~` when it doesn't.
+is a full scan on every keystroke. The planner's estimate is basically free, and PostgREST
+falls back to an exact count when the result set is small, so a filtered search still shows a
+real number. The UI prefixes a `~` when it's an estimate.
 
-**Selected columns, not `select("*")`.** The list query names its columns so
-`raw_response` — the entire model payload — never crosses the wire for a row nobody has
-opened. Invisible at 15 rows, decisive at 100.
+**Named columns instead of `select("*")`.** The list query spells out its columns so
+`raw_response`, which is the entire model payload, never crosses the wire for a row nobody has
+opened. Doesn't matter at 15 rows. Matters a lot at 100.
 
 ---
 
 ## RLS model
 
-**The model.** A company belongs to exactly one user via `companies.owner_id`. An
-`enrichment_results` row inherits its parent company's visibility — there is no independent
-ownership, because an enrichment has no meaning apart from its company.
+A company belongs to one user through `companies.owner_id`. An `enrichment_results` row
+inherits whatever visibility its parent company has — it has no independent owner, because an
+enrichment doesn't mean anything apart from the company it describes.
 
-**The policies** (`supabase/migrations/0001_init.sql`):
+The policies (all in `supabase/migrations/0001_init.sql`):
 
-| Table | Command | Rule |
-|---|---|---|
-| `companies` | SELECT | `owner_id is null or owner_id = auth.uid()` |
-| `companies` | INSERT | `WITH CHECK owner_id = auth.uid()` |
-| `companies` | UPDATE | `USING` **and** `WITH CHECK` `owner_id = auth.uid()` |
-| `companies` | DELETE | `owner_id = auth.uid()` |
-| `enrichment_results` | SELECT | `EXISTS (company you can see)` |
-| `enrichment_results` | INSERT/UPDATE | **no policy at all** |
+- `companies` SELECT: `owner_id is null or owner_id = auth.uid()`
+- `companies` INSERT: `WITH CHECK owner_id = auth.uid()`
+- `companies` UPDATE: `USING` **and** `WITH CHECK`, both `owner_id = auth.uid()`
+- `companies` DELETE: `owner_id = auth.uid()`
+- `enrichment_results` SELECT: `EXISTS` a company you can already see
+- `enrichment_results` INSERT/UPDATE: no policy at all
 
-Three things worth calling out:
+Three things I'd point out:
 
-1. **`USING` and `WITH CHECK` do different jobs on UPDATE.** `USING` decides which rows you
-   may touch; `WITH CHECK` validates the row you're writing. With only `USING`, a user could
-   update their own row and set `owner_id` to someone else's id — handing it away, or
-   worse, stealing it back. Both clauses are required.
+**`USING` and `WITH CHECK` do different jobs on UPDATE.** `USING` decides which rows you're
+allowed to touch. `WITH CHECK` validates the row you're writing back. With only `USING`, a
+user could update their own row and set `owner_id` to someone else's id, handing the row away
+or grabbing it back later. You need both.
 
-2. **`enrichment_results` has no write policy on purpose.** With RLS enabled and no
-   permissive policy, writes from `anon`/`authenticated` are denied outright. Users can read
-   enrichment history; only the trusted server can produce it.
+**`enrichment_results` has no write policy deliberately.** With RLS on and no permissive
+policy, writes from `anon` and `authenticated` are just denied. Users can read enrichment
+history; only the trusted server produces it.
 
-3. **The Edge Function bypasses all of this.** It writes with the service role, by design —
-   which means RLS provides no protection there. So the function repeats the ownership check
-   in code (`canAccess()` in `index.ts`), and that check mirrors the SELECT policy
-   line-for-line. This is the part that's easy to get wrong: a service-role function is only
-   as safe as its own authorisation code.
+**The Edge Function bypasses all of this.** It writes with the service role, by design, which
+means RLS protects nothing there. So the function repeats the ownership check in code
+(`canAccess()` in `index.ts`) and that check mirrors the SELECT policy line for line. This is
+the easy thing to get wrong — a service-role function is only as safe as its own authorisation
+code, and it's worth being explicit that the two have to be kept in sync by hand.
 
-**The `owner_id IS NULL` clause** makes seeded rows unowned demo data, visible to everyone.
-That is a deliberate dev affordance so the dashboard shows data before auth is wired up, and
-it is exactly one clause to delete for strict isolation. Wiring real auth was called out as a
-stretch in the brief, and I left it out — see below.
+The `owner_id IS NULL` clause makes seeded rows unowned demo data that everyone can see. It's
+there so the dashboard shows something before auth is wired up, and it's one clause to delete
+for strict isolation. The brief listed real auth as a stretch and I left it out.
 
-**How I'd test it with two users.** Create users A and B via `supabase.auth.signUp`. Insert a
-company owned by A and one owned by B. Then, holding A's JWT:
+### How I'd test it with two users
 
-- `select * from companies` returns A's row and any unowned rows, never B's;
-- `insert` with `owner_id = B` is rejected by the INSERT `WITH CHECK`;
-- `update companies set owner_id = A where id = <B's row>` affects **0 rows** — the `USING`
-  clause filters B's row out before the update is considered, so this returns success with an
-  empty result rather than an error. Asserting on the *row count*, not the absence of an
-  error, is the trap here;
-- `update companies set owner_id = B where id = <A's row>` is rejected by the `WITH CHECK`;
-- `insert into enrichment_results ...` is rejected regardless of company.
+Create users A and B with `supabase.auth.signUp`, then insert a company owned by each. Holding
+A's JWT:
 
-The natural home for this is a pgTAP suite in `supabase/tests/`, run by `supabase test db`.
+- `select * from companies` returns A's row plus any unowned rows, never B's.
+- Inserting with `owner_id = B` gets rejected by the INSERT `WITH CHECK`.
+- `update companies set owner_id = A where id = <B's row>` affects **zero rows**. The `USING`
+  clause filters B's row out before the update is even considered, so this comes back
+  successful with an empty result rather than as an error. Asserting on the row count rather
+  than the absence of an error is the trap here, and it's the assertion I'd get wrong first.
+- `update companies set owner_id = B where id = <A's row>` gets rejected by the `WITH CHECK`.
+- Inserting into `enrichment_results` gets rejected either way.
+
+pgTAP in `supabase/tests/` run by `supabase test db` is where this belongs.
 
 ---
 
 ## LLM reliability
 
-Four layers, applied in order.
+Four layers, in order.
 
 **1. Constrain the output at the source.** The OpenAI call uses structured outputs with
 `strict: true` and the enrichment JSON Schema, so the model is decoding against a grammar
-rather than being asked nicely for JSON.
+rather than being politely asked for JSON.
 
-One wrinkle worth knowing: OpenAI's strict mode accepts only a subset of JSON Schema, and
-`maxLength` / `minimum` / `maximum` are **unsupported keywords** — sending them gets the
-request rejected. So `OPENAI_WIRE_SCHEMA` drops them and zod re-imposes those bounds on the
-way back. `ENRICHMENT_JSON_SCHEMA` stays as the documented contract.
+One wrinkle worth knowing about: OpenAI's strict mode only accepts a subset of JSON Schema,
+and `maxLength`, `minimum` and `maximum` are unsupported keywords — send them and the request
+gets rejected outright. So `OPENAI_WIRE_SCHEMA` drops them and zod re-applies those bounds on
+the way back. `ENRICHMENT_JSON_SCHEMA` stays as the documented contract.
 
-**2. Normalise, narrowly.** `normaliseCandidate()` fixes documented formatting failures before
-validation: a JSON object wrapped in a ```` ```json ```` fence, an answer nested under a
-`result` key, `"200 employees"` where `"201-1000"` was expected, a confidence of `87` that
-should have been `0.87`, a summary two characters over the limit.
+**2. Normalise, but narrowly.** `normaliseCandidate()` fixes formatting failures before
+validation runs: JSON wrapped in a ```` ```json ```` fence, an answer nested under a `result`
+key, `"200 employees"` where a bucket was expected, a confidence of `87` that was meant to be
+`0.87`, a summary a couple of characters over the limit.
 
-The bar for anything in this layer: **it must be a deterministic formatting fix, never a guess
-at missing data.** So `"51 - 200 employees"` → `"51-200"` is in (whitespace and a suffix);
-`"about 500 people"` → `"201-1000"` is deliberately *out*, because inferring the size is
-precisely the judgement we're validating. That value fails and triggers a retry.
+The rule I held myself to here is that a repair has to be a deterministic formatting fix, never
+a guess at missing data. So `"51 - 200 employees"` becomes `"51-200"`, because that's just
+whitespace and a suffix. But `"about 500 people"` does **not** become `"201-1000"`, even though
+it obviously means that, because inferring the size is the exact judgement being validated. It
+fails and triggers a retry instead.
 
 Every repair that fires is recorded in `enrichment_results.repairs` and shown in the detail
-view — a field that needed normalising is weaker evidence than one that came back clean, and
-provenance should say so rather than hide it.
+panel. A field that needed normalising before it validated is weaker evidence than one that
+came back clean, and provenance should say so rather than quietly paper over it.
 
-**3. Validate strictly.** `validateEnrichment()` runs a zod schema that is the single source of
-truth for what may enter the database: all five fields present, `employee_size_bucket` in the
-enum, `confidence` a finite number in `[0,1]`, `one_line_summary` non-empty and ≤160 chars, and
-`.strict()` so an invented extra key is a failure rather than a silent drop. It throws;
-there is no path that persists an enrichment without passing it.
+**3. Validate strictly.** `validateEnrichment()` runs a zod schema that's the single source of
+truth for what's allowed into the database: all five fields present, `employee_size_bucket` in
+the enum, `confidence` a finite number in `[0,1]`, `one_line_summary` non-empty and 160 chars
+or fewer, and `.strict()` so an invented extra key is a failure rather than something silently
+dropped. It throws, and there's no code path that persists an enrichment without going through
+it.
 
-**4. Escalate, don't repeat.** The retry ladder in `runEnrichment()`:
+**4. Escalate rather than repeat.** The ladder in `runEnrichment()`:
 
-| Attempt | Model | Prompt |
-|---|---|---|
-| 1 | primary (`gpt-4o-mini`) | base, temperature 0 |
-| 2 | primary | **tightened** — quotes the exact zod error and restates the violated constraints, temperature 0.2 |
-| 3 | fallback (`gpt-4o`) | tightened |
+1. primary model (`gpt-4o-mini`), base prompt, temperature 0
+2. primary model, tightened prompt quoting the exact zod error and restating the constraints
+   it broke, temperature 0.2
+3. fallback model (`gpt-4o`), tightened prompt
 
-The escalation is the point. Re-asking the same model the same question at temperature 0
-reproduces the same invalid answer, so attempt 2 changes the *prompt* (feeding the model its
-own validation error) and attempt 3 changes the *model*. Temperature moves off 0 on retry for
-the same reason.
+Escalation is the whole point. Asking the same model the same question at temperature 0 gets
+you the same invalid answer, so attempt 2 changes the prompt (feeding the model its own
+validation error) and attempt 3 changes the model. Temperature moves off 0 on retry for the
+same reason.
 
-**When the model misbehaves anyway.** Content failures and transport failures are separate
-types. A `ValidationError` feeds the next attempt's prompt. A `ProviderError` carries a
-`retryable` flag — 429 and 5xx get a backoff and another rung, while a missing API key, a
-refusal or a 4xx breaks the loop immediately rather than burning three attempts on an error
-that cannot change. Every call is wrapped in a 30s `AbortController` timeout.
+**When it misbehaves anyway.** Content failures and transport failures are separate types. A
+`ValidationError` feeds into the next attempt's prompt. A `ProviderError` carries a `retryable`
+flag: 429s and 5xx get a backoff and another rung, while a missing API key, a refusal or a 4xx
+breaks the loop straight away instead of burning three attempts on something that can't change.
+Every call is wrapped in a 30 second `AbortController` timeout.
 
-If the ladder is exhausted, the company is marked `failed`, a `failed` row records the error
-and the per-attempt trace, and the endpoint returns 502. The frontend treats that 502 as a
-*result*, not a crash — the row is re-read and the failure shown in the UI.
+If the ladder runs out, the company is marked `failed`, a `failed` row records the error and
+the per-attempt trace, and the endpoint returns 502. The frontend treats that 502 as a result
+rather than a crash: it re-reads the row and shows the failure.
 
 **Concurrency.** Claiming a run is a conditional `UPDATE ... WHERE enrichment_status <>
-'running'`; if it affects zero rows, someone else is already running and the caller gets 409.
-A run whose function died mid-flight is reclaimable after 5 minutes so a crash can't wedge a
-row in `running` forever.
+'running'`. If it affects zero rows, someone else is already running and the caller gets a 409.
+A run whose function died partway through becomes reclaimable after 5 minutes, so a crash
+can't leave a row wedged in `running` forever.
 
 ---
 
-## What I deliberately left out / would do next
+## What I left out, and what I'd do next
 
-Scoped to the one-day box, core before stretch. Cut, in rough order of what I'd do next:
+I kept to the one-day box and did the core before anything else. Roughly in the order I'd pick
+them up:
 
-- **Auth, and therefore a live RLS demo.** The policies are written and the function
-  authorises against `owner_id`, but nothing signs in, so the `owner_id IS NULL` clause is
-  doing the work in practice. Next: a Supabase magic-link screen, drop that clause, set
-  `owner_id` on insert. Half a day including the pgTAP tests described above.
-- **Tests.** The highest-value gap. `normaliseCandidate()` and the retry ladder are pure
-  functions over fixtures and the natural first target: malformed JSON, fenced JSON, bad
-  enum, percentage confidence, over-long summary, extra key, and a ladder that succeeds on
-  attempt 2 vs. exhausts. `deno test` for those, plus pgTAP for the policies. Cut for time,
-  not because it's optional — this is what I'd write first if the code were going to live.
-- **Batch enrichment.** Synchronous one-at-a-time is right for a dashboard click and wrong
-  for a 10k backfill. That wants a queue (pgmq or a `jobs` table) with a worker respecting
-  the provider's rate limit, plus request-level idempotency so a retried job doesn't produce
-  a duplicate run. The n8n stretch item is the orchestration layer over exactly this.
-- **Keyset pagination.** `.range()` is `LIMIT/OFFSET`, so page 2,000 still walks 50k index
-  entries. The index `(owner_id, created_at desc, id desc)` was chosen so
-  `WHERE (created_at, id) < (:last_created_at, :last_id)` is a drop-in — the reason `id` is
-  in the ORDER BY and the index at all. Deferred because it also costs the page-number UI,
-  which is more useful at 15 rows than O(1) deep paging is.
-- **Mistral provider.** Only OpenAI is implemented. The shape is identical —
-  `POST /v1/chat/completions` with `response_format: { type: "json_schema", ... }` — so it's
-  a second `case` in `enrichWithLLM`, and having it would make the fallback rung a
-  cross-*provider* one, which is a genuinely stronger failure story than a bigger model from
-  the same vendor.
-- **The structured filter** (stretch). `listCompanies()` already accepts a `status` param and
-  the index `(owner_id, enrichment_status)` is in place; what's missing is the dropdown and
-  the state plumbing — deliberately left as the small, visible next step.
-- **Dedup.** The seed's `"Siemens AG"` / `"siemens"` pair is bait, and I left it alone: the
-  raw layer should stay raw, and dedup is a scoring/matching problem (domain normalisation,
-  name fingerprinting, a review queue for near-matches) rather than something to bolt onto
-  ingest.
-- **Stale-`running` sweep.** Reclaiming is currently lazy — a crashed run only unblocks when
-  someone clicks again. A periodic job flipping rows stuck in `running` to `failed` would
-  make the dashboard honest without a click.
-- **Cost/latency numbers** (stretch). Not measured, so not claimed.
+**Auth, and with it a live RLS demo.** The policies are written and the function authorises
+against `owner_id`, but nothing signs in, so in practice the `owner_id IS NULL` clause is doing
+the work. Next step is a magic-link screen, deleting that clause, and setting `owner_id` on
+insert. Maybe half a day including the pgTAP tests above.
+
+**Tests.** This is the gap that bothers me most. `normaliseCandidate()` and the retry ladder
+are pure functions over fixtures and would be straightforward to cover: malformed JSON, fenced
+JSON, a bad enum, percentage confidence, an over-long summary, an extra key, plus a ladder that
+succeeds on attempt 2 versus one that exhausts. `deno test` for those and pgTAP for the
+policies. Cut for time rather than because I think they're optional — if this code were going
+to live, this is what I'd write first.
+
+**Batch enrichment.** Synchronous is right for a dashboard click and wrong for a 10k backfill.
+That wants a queue (pgmq, or just a `jobs` table) with a worker that respects the provider's
+rate limit, plus request-level idempotency so a retried job doesn't produce a duplicate run.
+The n8n stretch item is the orchestration layer sitting on top of exactly that.
+
+**Keyset pagination.** `.range()` is `LIMIT/OFFSET`, so page 2,000 still walks 50k index
+entries. I picked the index `(owner_id, created_at desc, id desc)` so that
+`WHERE (created_at, id) < (:last_created_at, :last_id)` drops straight in — that's the only
+reason `id` is in the ORDER BY and the index at all. I didn't do it because it also costs you
+the page-number UI, which is more useful at 15 rows than O(1) deep paging is.
+
+**Mistral.** Only OpenAI is implemented. The shape is identical, a
+`POST /v1/chat/completions` with `response_format: { type: "json_schema", ... }`, so it's
+another `case` in `enrichWithLLM`. Worth doing mainly because it would make the fallback rung
+a cross-provider one, which is a genuinely better failure story than escalating to a bigger
+model from the same vendor.
+
+**The structured filter** (stretch). `listCompanies()` already takes a `status` param and the
+`(owner_id, enrichment_status)` index is there. What's missing is the dropdown and the state
+plumbing. Left deliberately as the small visible next step.
+
+**Dedup.** The `"Siemens AG"` / `"siemens"` pair in the seed is obviously bait and I left it
+alone on purpose. The raw layer should stay raw, and dedup is a matching problem — domain
+normalisation, name fingerprinting, a review queue for near-matches — rather than something to
+bolt onto ingest.
+
+**A sweep for stale `running` rows.** Reclaiming is lazy right now: a crashed run only unblocks
+when someone clicks again. A periodic job flipping stuck rows to `failed` would make the
+dashboard honest without needing a click.
+
+**Cost and latency numbers** (stretch). I didn't measure them, so I'm not going to claim them.
