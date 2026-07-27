@@ -1,0 +1,17 @@
+[
+  { "id": 1,  "name": "Siemens AG",          "domain": "siemens.com",      "raw_note": "Large industrial/tech conglomerate, Munich. ~300k employees worldwide." },
+  { "id": 2,  "name": "siemens",              "domain": "",                 "raw_note": "duplicate? munich electronics" },
+  { "id": 3,  "name": "  Zalando SE",         "domain": "zalando.de",       "raw_note": "online fashion retailer berlin" },
+  { "id": 4,  "name": "DB Schenker",          "domain": null,               "raw_note": "Logistics arm of Deutsche Bahn. HQ Essen." },
+  { "id": 5,  "name": "N26 GmbH",             "domain": "n26.com",          "raw_note": "mobile bank / fintech, Berlin, a few thousand staff" },
+  { "id": 6,  "name": "Trumpf",               "domain": "trumpf.com",       "raw_note": "machine tools + lasers, family-owned, Ditzingen" },
+  { "id": 7,  "name": "About You",            "domain": "aboutyou.com",     "raw_note": "Hamburg e-commerce, fashion" },
+  { "id": 8,  "name": "Celonis",              "domain": "celonis.com",      "raw_note": "process mining software, Munich/NYC, unicorn" },
+  { "id": 9,  "name": "Personio",             "domain": "",                 "raw_note": "HR software for SMEs, München" },
+  { "id": 10, "name": "BioNTech SE",          "domain": "biontech.de",      "raw_note": "Mainz biotech, mRNA, ~5000 ppl" },
+  { "id": 11, "name": "flixbus",              "domain": "flixbus.com",      "raw_note": "FlixMobility - buses + trains, Munich" },
+  { "id": 12, "name": "GetYourGuide",         "domain": "getyourguide.com", "raw_note": "travel experiences marketplace, Berlin" },
+  { "id": 13, "name": "Robert Bosch GmbH",    "domain": "bosch.com",        "raw_note": "engineering + tech, Gerlingen, very large" },
+  { "id": 14, "name": "DeepL",                "domain": "deepl.com",        "raw_note": "AI translation, Köln" },
+  { "id": 15, "name": "Winterhalter",         "domain": "",                 "raw_note": "commercial dishwashing systems, Meckenbeuren - mittelstand" }
+]

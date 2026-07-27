@@ -1,0 +1,17 @@
+# dependencies / build
+node_modules/
+dist/
+*.local
+
+# env / secrets
+.env
+.env.local
+web/.env
+web/.env.local
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/
+
+# misc
+.DS_Store
